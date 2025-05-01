@@ -143,121 +143,42 @@ function setUint32(view, offset, value) {
  * @param {Object} volumeLevels - Object mapping track IDs to volume levels
  * @returns {Promise<Blob>} - Promise resolving to audio blob
  */
-export const mixAudioTracks = async (audioElements, volumeLevels = {}) => {
-  // Create audio context
-  const offlineContext = new OfflineAudioContext({
-    numberOfChannels: 2,
-    length: 44100 * 60, // 60 seconds max at 44.1kHz
-    sampleRate: 44100,
-  });
-
+// Update your existing mixAudioTracks function
+export const mixAudioTracks = async (audioElements, volumeLevels = {}, format = 'wav') => {
   try {
-    // First, ensure all audio elements are loaded
-    await Promise.all(
-      audioElements.map(element => {
-        // If the audio is already loaded and has duration, no need to wait
-        if (element.readyState >= 3 && element.duration > 0) {
-          return Promise.resolve();
-        }
+    // Convert HTML audio elements to blobs
+    const audioBlobs = await Promise.all(
+      audioElements.map(async (audio) => {
+        // If we already have a blob, use it
+        if (audio.blob) return audio.blob;
         
-        // Otherwise, wait for the audio to load
-        return new Promise((resolve, reject) => {
-          const loadHandler = () => {
-            element.removeEventListener('loadeddata', loadHandler);
-            element.removeEventListener('error', errorHandler);
-            resolve();
-          };
-          
-          const errorHandler = (err) => {
-            element.removeEventListener('loadeddata', loadHandler);
-            element.removeEventListener('error', errorHandler);
-            reject(new Error(`Failed to load audio: ${err.message}`));
-          };
-          
-          element.addEventListener('loadeddata', loadHandler);
-          element.addEventListener('error', errorHandler);
-          
-          // If already loaded but event didn't fire
-          if (element.readyState >= 3) {
-            loadHandler();
-          }
-        });
+        // Otherwise fetch the audio file
+        const response = await fetch(audio.src);
+        return await response.blob();
       })
     );
     
-    // Now process the loaded audio elements
-    const audioBuffers = await Promise.all(
-      audioElements.map(async (element, index) => {
-        // Skip disabled tracks
-        if (volumeLevels[index]?.muted || volumeLevels[index]?.volume === 0) {
-          return null;
-        }
-        
-        // Check if the audio has valid duration
-        if (!element.duration || element.duration <= 0) {
-          console.warn(`Audio element at index ${index} has no duration, skipping`);
-          return null;
-        }
-        
-        try {
-          // Instead of using analyzer which doesn't capture the full audio,
-          // fetch the audio data directly from the source
-          const response = await fetch(element.src);
-          const arrayBuffer = await response.arrayBuffer();
-          const audioBuffer = await offlineContext.decodeAudioData(arrayBuffer);
-          
-          return {
-            buffer: audioBuffer,
-            id: index,
-            volume: volumeLevels[index]?.muted ? 0 : (volumeLevels[index]?.volume || 1.0),
-            muted: volumeLevels[index]?.muted || false
-          };
-        } catch (error) {
-          console.error(`Error processing audio at index ${index}:`, error);
-          return null;
-        }
-      })
-    );
-
-    // Filter out null buffers (disabled tracks or errors)
-    const validBuffers = audioBuffers.filter(item => item !== null);
+    // Mix the audio
+    const mixedBuffer = await mixAudio(audioBlobs, volumeLevels);
     
-    if (validBuffers.length === 0) {
-      throw new Error('No active audio tracks to mix');
+    // Return in requested format
+    if (format.toLowerCase() === 'mp3') {
+      try {
+        // Try MP3 conversion
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const arrayBuffer = await mixedBuffer.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        return convertToMP3(audioBuffer);
+      } catch (error) {
+        console.warn('MP3 conversion failed, falling back to WAV:', error);
+        return mixedBuffer; // Return WAV as fallback
+      }
     }
-
-    // Find the longest buffer to determine output length
-    const maxLength = Math.max(...validBuffers.map(item => item.buffer.length));
-
-    // Create a new offline context with the correct length
-    const finalContext = new OfflineAudioContext({
-      numberOfChannels: 2,
-      length: maxLength,
-      sampleRate: 44100,
-    });
-
-    // Mix all tracks
-    validBuffers.forEach(item => {
-      const source = finalContext.createBufferSource();
-      source.buffer = item.buffer;
-      
-      // Add volume control
-      const gainNode = finalContext.createGain();
-      gainNode.gain.value = item.muted ? 0 : item.volume;
-      
-      source.connect(gainNode);
-      gainNode.connect(finalContext.destination);
-      source.start(0);
-    });
-
-    // Render the final mix
-    const renderedBuffer = await finalContext.startRendering();
-
-    // Convert to WAV format
-    const wavBlob = bufferToWav(renderedBuffer);
-    return wavBlob;
+    
+    // Default to WAV
+    return mixedBuffer;
   } catch (error) {
-    console.error('Error mixing audio:', error);
+    console.error('Error in mixAudioTracks:', error);
     throw error;
   }
 };
@@ -328,3 +249,99 @@ function writeString(dataView, offset, string) {
     dataView.setUint8(offset + i, string.charCodeAt(i));
   }
 }
+
+// Replace the import at line 246
+// import lamejs from 'lamejs';
+
+// With a dynamic import or conditional check
+function convertToMP3(audioBuffer, bitRate = 128) {
+  // Check if lamejs is available
+  if (typeof window.lamejs === 'undefined') {
+    console.warn('lamejs library not found. Falling back to WAV format.');
+    return bufferToWav(audioBuffer);
+  }
+  
+  const channels = [];
+  const numChannels = audioBuffer.numberOfChannels;
+  const sampleRate = audioBuffer.sampleRate;
+  
+  // Extract channels
+  for (let i = 0; i < numChannels; i++) {
+    channels.push(audioBuffer.getChannelData(i));
+  }
+  
+  // Create MP3 encoder
+  const mp3encoder = new lamejs.Mp3Encoder(numChannels, sampleRate, bitRate);
+  const mp3Data = [];
+  
+  // Process in chunks to avoid memory issues
+  const sampleBlockSize = 1152;
+  const samples = new Int16Array(sampleBlockSize * numChannels);
+  
+  for (let i = 0; i < channels[0].length; i += sampleBlockSize) {
+    // Convert float32 to int16
+    for (let j = 0; j < sampleBlockSize; j++) {
+      if (i + j < channels[0].length) {
+        // Handle mono or stereo
+        if (numChannels === 1) {
+          const val = Math.max(-1, Math.min(1, channels[0][i + j]));
+          samples[j] = val < 0 ? val * 0x8000 : val * 0x7FFF;
+        } else {
+          const left = Math.max(-1, Math.min(1, channels[0][i + j]));
+          const right = Math.max(-1, Math.min(1, channels[1][i + j]));
+          samples[j * 2] = left < 0 ? left * 0x8000 : left * 0x7FFF;
+          samples[j * 2 + 1] = right < 0 ? right * 0x8000 : right * 0x7FFF;
+        }
+      }
+    }
+    
+    // Encode
+    let mp3buf;
+    if (numChannels === 1) {
+      mp3buf = mp3encoder.encodeBuffer(samples);
+    } else {
+      // For stereo, we need to separate left and right channels
+      const left = new Int16Array(sampleBlockSize);
+      const right = new Int16Array(sampleBlockSize);
+      
+      for (let j = 0; j < sampleBlockSize; j++) {
+        if (j < samples.length / 2) {
+          left[j] = samples[j * 2];
+          right[j] = samples[j * 2 + 1];
+        }
+      }
+      
+      mp3buf = mp3encoder.encodeBuffer(left, right);
+    }
+    
+    if (mp3buf.length > 0) {
+      mp3Data.push(mp3buf);
+    }
+  }
+  
+  // Finalize
+  const end = mp3encoder.flush();
+  if (end.length > 0) {
+    mp3Data.push(end);
+  }
+  
+  // Combine chunks
+  const blob = new Blob(mp3Data, { type: 'audio/mp3' });
+  return blob;
+}
+
+// Mock implementation for testing
+export const mockMixAudioTracks = async (audioElements, volumeLevels = {}, format = 'wav') => {
+  return new Promise((resolve) => {
+    console.log(`Mixing ${audioElements.length} tracks with format: ${format}`);
+    console.log('Volume levels:', volumeLevels);
+    
+    // Simulate processing time
+    setTimeout(() => {
+      // Create a dummy blob
+      const dummyContent = new Uint8Array([0, 1, 2, 3, 4, 5]);
+      const blob = new Blob([dummyContent], { type: format === 'mp3' ? 'audio/mp3' : 'audio/wav' });
+      resolve(blob);
+    }, 2000); // 2 second delay to simulate processing
+  });
+};

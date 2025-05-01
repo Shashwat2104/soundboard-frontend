@@ -1,11 +1,14 @@
-const API_URL = "https://soundboard-backend-ajwe.onrender.com/";
+const API_URL = "http://localhost:5000";
 
 export const apiCall = async (endpoint, method = "GET", data = null) => {
   const token = localStorage.getItem("token");
   const headers = {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
   };
+  
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
 
   const response = await fetch(`${API_URL}/${endpoint}`, {
     method,
@@ -20,7 +23,7 @@ export const apiCall = async (endpoint, method = "GET", data = null) => {
     }
     return result;
   } catch (error) {
-    if (error.name === 'SyntaxError') {
+    if (error.name === "SyntaxError") {
       // Handle HTML response
       throw new Error(`API returned invalid JSON for ${endpoint}`);
     }
@@ -61,6 +64,26 @@ export const pollRoomLoops = (roomCode, callback, interval = 5000) => {
   return () => clearInterval(intervalId);
 };
 
+// Add the missing uploadTrack function
+export const uploadTrack = (roomCode, formData) => {
+  // For FormData, we need a different approach than JSON
+  const token = localStorage.getItem("token");
+  return fetch(`${API_URL}/rooms/${roomCode}/tracks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  }).then((response) => {
+    if (!response.ok) {
+      return response.json().then((err) => {
+        throw new Error(err.message || "Something went wrong");
+      });
+    }
+    return response.json();
+  });
+};
+
 export const saveLoop = (roomCode, formData) => {
   // For FormData, we need a different approach than JSON
   const token = localStorage.getItem("token");
@@ -81,3 +104,5 @@ export const saveLoop = (roomCode, formData) => {
 };
 export const getUserData = () => apiCall("user/me");
 export const getUserStats = (userId) => apiCall(`users/${userId}/stats`);
+export const getUserRooms = (userId) => apiCall(`users/${userId}/rooms`);
+export const saveExportRecord = (exportData) => apiCall("mixdowns", "POST", exportData);

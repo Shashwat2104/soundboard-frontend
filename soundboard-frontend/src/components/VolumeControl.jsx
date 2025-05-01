@@ -1,16 +1,26 @@
 import React from "react";
 
-const VolumeControl = ({ volume, onChange }) => {
+const VolumeControl = ({ volume = 1, onChange, disabled = false }) => {
+  const handleChange = (e) => {
+    const newVolume = parseFloat(e.target.value);
+    onChange(newVolume);
+  };
+
   return (
-    <input
-      type="range"
-      min="0"
-      max="1"
-      step="0.01"
-      value={volume}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="w-32"
-    />
+    <div className="volume-control">
+      <span className="text-sm">🔈</span>
+      <input
+        type="range"
+        min="0"
+        max="1"
+        step="0.01"
+        value={volume}
+        onChange={handleChange}
+        disabled={disabled}
+        className="slider"
+      />
+      <span className="text-sm">{Math.round(volume * 100)}%</span>
+    </div>
   );
 };
 
